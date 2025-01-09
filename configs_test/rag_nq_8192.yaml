@@ -3,9 +3,12 @@ datasets: kilt_nq
 generation_max_length: 20
 test_files: /old_os/xinyao/helmet/origin_data/data/kilt/nq-dev-multikilt_1000_k50_dep6.jsonl
 demo_files: /old_os/xinyao/helmet/origin_data/data/kilt/nq-train-multikilt_1000_k3_dep6.jsonl
-use_chat_template: false
 max_test_samples: 100
 shots: 2
 stop_new_line: true
 model_name_or_path: meta-llama/Llama-3.2-1B-Instruct
 output_dir: /old_os/xinyao/helmet/output/Llama-3.2-1B-Instruct
+use_chat_template: true
+top_p: 0.95
+temperature: 0
+do_sample: false

@@ -502,7 +502,7 @@ def load_ruler(dataset, path, max_test_samples=None, seed=42):
     prompt_template = user_template + "\n" + system_template
 
     # https://github.com/hsiehjackson/RULER/blob/main/scripts/data/synthetic/constants.py
-    if "mv_niah" in dataset or "mq_niah" in dataset:
+    if "niah_mv" in dataset or "niah_mq" in dataset:
         user_template = "Some special magic {type_needle_v} are hidden within the following text. Make sure to memorize it. I will quiz you about the {type_needle_v} afterwards.\n{context}\nWhat are all the special magic {type_needle_v} for {query} mentioned in the provided text?"
         system_template = "The special magic {type_needle_v} for {query} mentioned in the provided text are"
     elif "niah" in dataset:

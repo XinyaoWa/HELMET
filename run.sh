@@ -1,6 +1,9 @@
 ##################### Run ##########################
 python eval.py --config configs_test/niah_test.yaml --device hpu --use_kv_cache --use_hpu_graphs --bf16 --sdp_on_bf16
 python eval.py --config configs_test/rag_short_nq_8192.yaml --device hpu --use_kv_cache --use_hpu_graphs --bf16 --sdp_on_bf16
+python eval.py --config configs_test/niah_mv_8192.yaml --device hpu --use_kv_cache --use_hpu_graphs --bf16 --sdp_on_bf16
+nohup python -u eval.py --config configs_test/rag_nq_8192.yaml --device hpu --use_kv_cache --use_hpu_graphs --bf16 --sdp_on_bf16 > log/rag_nq_8192.log &
+nohup python -u eval.py --config configs_test/niah_mk_8192.yaml --device hpu --use_kv_cache --use_hpu_graphs --bf16 --sdp_on_bf16 > log/niah_mk_8192.log &
 
 ##################### build docker ##########################
 docker build -t helmet:latest --build-arg https_proxy=$https_proxy --build-arg http_proxy=$http_proxy -f Dockerfile .
