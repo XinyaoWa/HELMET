@@ -5,6 +5,8 @@ import torch
 from transformers import PreTrainedTokenizer
 import functools
 import logging
+from utils_habana import initialize_model
+import torch.nn.functional as F
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
                     datefmt='%m/%d/%Y %H:%M:%S')
 logger = logging.getLogger(__name__)
@@ -625,6 +627,172 @@ class HFModel(LLM):
             "input_text": save_prompt,
         }
 
+class HabanaHFModel(LLM):
+    def __init__(
+        self, 
+        model_name, 
+        temperature=0.9, 
+        top_p=0.9, 
+        max_length=32768,
+        generation_max_length=2048,
+        generation_min_length=0,
+        do_sample=True,
+        stop_newline=False,
+        use_chat_template=False,
+        **kwargs,
+    ):
+        super().__init__(
+            model_name, 
+            temperature=temperature, 
+            top_p=top_p, 
+            max_length=max_length,
+            generation_max_length=generation_max_length,
+            generation_min_length=generation_min_length,
+            do_sample=do_sample,
+            stop_newline=stop_newline,
+            use_chat_template=use_chat_template,
+        )
+        self.args = kwargs["args"]
+        self.max_length = max_length
+        self.device = self.args.device
+        self.batch_size = self.args.batch_size
+        self.buckets = sorted(self.args.buckets)
+        self.use_lazy_mode = True
+        if self.args.torch_compile:
+            self.use_lazy_mode = False
+
+        self.model, _, self.tokenizer, self.options = initialize_model(self.args, logger)
+
+        # use the default if possible, append if necessary
+        stop_token_ids = self.model.generation_config.eos_token_id
+        stop_token_ids = [stop_token_ids] if not isinstance(stop_token_ids, list) else stop_token_ids
+        if stop_newline:
+            stop = list(set(["\n", "Ċ", "ĊĊ", "<0x0A>"]))
+            stop_token_ids = list(set([self.tokenizer.convert_tokens_to_ids(stop_token) for stop_token in stop] + stop_token_ids))
+            if "llama" in model_name.lower():
+                stop_token_ids.remove(self.tokenizer.unk_token_id)
+            stop_token_ids = [x for x in stop_token_ids if x is not None]
+        self.stop_token_ids = stop_token_ids
+
+        self.model_inputs = {"use_cache": self.options.use_cache}
+        if self.model.config.model_type in [
+            "llama",
+            "mistral",
+            "falcon",
+            "phi",
+            "mixtral",
+            "qwen2",
+            "gptj",
+            "starcoder2",
+            "gemma",
+            "baichuan",
+        ]:
+            self.model_inputs.update(
+                {
+                    "reuse_cache": self.options.reuse_cache,
+                }
+            )
+        if self.model.config.model_type in ["llama", "mistral", "qwen2", "falcon", "starcoder2", "gemma", "baichuan"]:
+            if self.model.config.model_type != "falcon":
+                self.model_inputs.update(
+                    {
+                        "attn_softmax_bf16": self.options.attn_softmax_bf16,
+                    }
+                )
+            self.model_inputs.update(
+                {
+                    "use_flash_attention": self.options.use_flash_attention,
+                    "flash_attention_recompute": self.options.flash_attention_recompute,
+                    "flash_attention_causal_mask": self.options.flash_attention_causal_mask,
+                }
+            )
+        if self.args.warmup:
+            self.warm_up()
+
+    def warm_up(self):
+        for bucket_size in reversed(self.buckets):
+            inps = torch.ones((self.batch_size, bucket_size), dtype=torch.int64)
+            self._model_call(inps)
+            pass
+    
+    # @property
+    # def max_length(self):
+    #     return self.buckets[-1]
+
+    # @property
+    # def device(self):
+    #     # We need to do padding ourselves, otherwise we'll end up with recompilations
+    #     # Returning 'cpu' to keep tensors on CPU in lm_eval code
+    #     return "cpu"
+    
+    def find_bucket(self, length):
+        return [b for b in self.buckets if b >= length][0]
+
+    def _model_call(self, inps):
+        bs, seq_length = inps.shape
+        padding_length = 0
+        if self.options.static_shapes:
+            bucket_length = self.find_bucket(seq_length)
+            if self.options.use_cache and self.options.reuse_cache:
+                self.model.allocate_kv_cache(bs, bucket_length + 1, bucket_length)
+            padding_length = bucket_length - seq_length
+            inps = F.pad(inps, (0, padding_length), value=self.model.config.pad_token_id)
+        logits = self.model(inps.to(self.device), **self.model_inputs)["logits"].cpu()
+
+        if self.options.static_shapes and padding_length > 0:
+            logits = logits[:, :-padding_length, :]
+        logits = logits.to(torch.float32)
+        return logits
+   
+    def prepare_inputs(self, test_item, data):
+        return tokenize(
+            test_item, 
+            data, 
+            tokenizer=self.tokenizer, 
+            max_length=self.max_length,
+            generation_max_length=self.generation_max_length,
+            use_chat_template=self.use_chat_template,
+        )
+        
+    @torch.no_grad()
+    def generate(self, inputs=None, prompt=None):
+        if inputs is None:
+            inputs = self.tokenizer([prompt], return_tensors="pt", max_length=self.max_length-self.generation_max_length, truncation=True, padding=True)
+        
+        inputs = inputs.to(self.device)
+        input_len = inputs.input_ids.size(1)
+        # inputs = {"input_ids": inputs.input_ids, "attention_mask": inputs.attention_mask}
+        print(inputs.input_ids.shape)
+        print(inputs.attention_mask.shape)
+        outputs = self.model.generate(
+                **inputs,
+                generation_config=self.options,
+                lazy_mode=self.use_lazy_mode,
+                hpu_graphs=self.args.use_hpu_graphs,
+                profiling_steps=self.args.profiling_steps,
+                profiling_warmup_steps=self.args.profiling_warmup_steps,
+                eos_token_id=self.stop_token_ids,
+                profiling_record_shapes=self.args.profiling_record_shapes,
+                max_new_tokens=self.generation_max_length,
+                min_new_tokens=self.generation_min_length,
+                do_sample=self.do_sample,
+                temperature=self.temperature,
+                top_p=self.top_p,
+                pad_token_id=self.tokenizer.pad_token_id,
+                return_dict_in_generate=True,
+                output_scores=False,
+                **self.model_inputs
+            )
+        
+        text = self.tokenizer.decode(outputs['sequences'][0, input_len:], skip_special_tokens=True)
+        save_prompt = self.tokenizer.decode(inputs["input_ids"][0][:500]) + " <skip> " + self.tokenizer.decode(inputs["input_ids"][0][-500:])
+        return {
+            "output": text,
+            "input_len": input_len,
+            "output_len": outputs['sequences'].size(1) - input_len,
+            "input_text": save_prompt,
+        }
+
 
 class VLLMModel(LLM):
     def __init__(
@@ -702,7 +870,10 @@ class VLLMModel(LLM):
 
 def load_LLM(args):
     kwargs = {}
-    if "gpt" in args.model_name_or_path:
+    if args.device == "hpu":
+        model_cls = HabanaHFModel
+        kwargs["args"] = args
+    elif "gpt" in args.model_name_or_path:
         model_cls = OpenAIModel
     elif "claude" in args.model_name_or_path:
         model_cls = AnthropicModel

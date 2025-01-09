@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 
 from arguments import parse_arguments
 from model_utils import load_LLM
-
+from utils_habana import finalize_quantization
 from data import (
     load_data, 
     TestItemDataset,
@@ -104,6 +104,10 @@ def run_test(args, model, dataset, test_file, demo_file):
 
             output = None
 
+    if args.device == "hpu":
+        import habana_frameworks.torch.hpu as torch_hpu
+
+        torch_hpu.synchronize()
     end_time = time.time()
     mem_usage = sum([torch.cuda.max_memory_allocated(i) for i in range(torch.cuda.device_count())])
     logger.info(f"Memory usage: {mem_usage/1000**3:.02f} GB")
@@ -140,7 +144,13 @@ def run_test(args, model, dataset, test_file, demo_file):
             with open(output_path + ".score", "w") as f:
                 json.dump(output["averaged_metrics"], f, indent=4)
         logger.info(f"done, results are written to {output_path}")
+    
+    if args.quant_config:
+        finalize_quantization(model)
+    if args.const_serialization_path and os.path.isdir(args.const_serialization_path):
+        import shutil
 
+        shutil.rmtree(args.const_serialization_path)
     return output_path
 
 
