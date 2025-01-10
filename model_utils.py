@@ -706,8 +706,8 @@ class HabanaHFModel(LLM):
                     "flash_attention_causal_mask": self.options.flash_attention_causal_mask,
                 }
             )
-        if self.args.warmup:
-            self.warm_up()
+        # if self.args.warmup:
+        #     self.warm_up()
 
     def warm_up(self):
         for bucket_size in reversed(self.buckets):
@@ -760,10 +760,17 @@ class HabanaHFModel(LLM):
             inputs = self.tokenizer([prompt], return_tensors="pt", max_length=self.max_length-self.generation_max_length, truncation=True, padding=True)
         
         inputs = inputs.to(self.device)
-        input_len = inputs.input_ids.size(1)
-        # inputs = {"input_ids": inputs.input_ids, "attention_mask": inputs.attention_mask}
-        print(inputs.input_ids.shape)
-        print(inputs.attention_mask.shape)
+        bs, input_len = inputs.input_ids.shape
+        padding_length = 0
+        if self.options.static_shapes:
+            bucket_length = self.max_length-self.generation_max_length
+            if self.options.use_cache and self.options.reuse_cache:
+                self.model.allocate_kv_cache(bs, bucket_length + 1, bucket_length)
+            padding_length = bucket_length - input_len
+            inputs.input_ids = F.pad(inputs.input_ids, (0, padding_length), value=self.model.config.pad_token_id)
+            inputs.attention_mask = F.pad(inputs.attention_mask, (0, padding_length), value=self.model.config.pad_token_id)
+        inputs = {"input_ids": inputs.input_ids, "attention_mask":inputs.attention_mask}
+        
         outputs = self.model.generate(
                 **inputs,
                 generation_config=self.options,
@@ -783,13 +790,18 @@ class HabanaHFModel(LLM):
                 output_scores=False,
                 **self.model_inputs
             )
-        
-        text = self.tokenizer.decode(outputs['sequences'][0, input_len:], skip_special_tokens=True)
-        save_prompt = self.tokenizer.decode(inputs["input_ids"][0][:500]) + " <skip> " + self.tokenizer.decode(inputs["input_ids"][0][-500:])
+
+        total_input_len = input_len
+        if self.options.static_shapes and padding_length > 0:
+            total_input_len = input_len + padding_length
+            save_prompt = self.tokenizer.decode(inputs["input_ids"][0][:500]) + " <skip> " + self.tokenizer.decode(inputs["input_ids"][0][-(500+padding_length):-padding_length])
+        else:
+            save_prompt = self.tokenizer.decode(inputs["input_ids"][0][:500]) + " <skip> " + self.tokenizer.decode(inputs["input_ids"][0][-500:])
+        text = self.tokenizer.decode(outputs['sequences'][0, total_input_len:], skip_special_tokens=True)
         return {
             "output": text,
             "input_len": input_len,
-            "output_len": outputs['sequences'].size(1) - input_len,
+            "output_len": outputs['sequences'].size(1) - total_input_len,
             "input_text": save_prompt,
         }
 
