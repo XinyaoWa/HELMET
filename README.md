@@ -49,6 +49,28 @@ pip install together # Together API
 ```
 You should also set the environmental variables accordingly so the API calls can be made correctly. To see the variable that you should set up, check out `model_utils.py` and the corresponding class (e.g., `GeminiModel`).
 
+### Run on Intel Gaudi
+
+If you want to test on Intel Gaudi card, can build docker image and start container with following command.
+
+```bash
+## build image
+docker build -t helmet:latest --build-arg https_proxy=$https_proxy --build-arg http_proxy=$http_proxy -f Dockerfile_hpu .
+
+## start container
+docker run -it  \
+    --runtime=habana \
+    --name="helmet" \
+    -e https_proxy=$https_proxy \
+    -e http_proxy=$http_proxy \
+    -e TOKENIZERS_PARALLELISM=false \
+    -e HABANA_VISIBLE_DEVICES=all \
+    -e OMPI_MCA_btl_vader_single_copy_mechanism=none \
+    --cap-add=sys_nice \
+    --ipc=host \
+    helmet:latest
+```
+
 ## Data
 
 <img width="1354" alt="benchmark_overview" src="assets/benchmark_overview.png">
@@ -82,6 +104,15 @@ bash scripts/run_api.sh # for the API models, note that API models results may v
 ```
 Check out the script file for more details!
 See [Others](#others) for the slurm scripts, easily collecting all the results, and using VLLM.
+
+**Eval on gaudi** set `device` to `hpu` can directly enable evaluation on gaudi.
+```bash
+## Eval on gaudi
+python eval.py --config configs/niah_mv_short.yaml --device hpu
+
+## Enable kv-cache, bf16, flash-attention to speedup and save memory
+python eval.py --config configs/rag_short.yaml --device hpu --use_kv_cache --reuse_cache --use_hpu_graphs --bf16 --sdp_on_bf16  --use_flash_attention  --flash_attention_recompute --flash_attention_causal_mask --flash_attention_fast_softmax
+```
 
 The full results from our evaluation are [here](https://docs.google.com/spreadsheets/d/1LBt6dP4UwZwU_CjoYhyAd_rjKhQLvo0Gq4cYUnpi_CA/edit?usp=sharing).
 

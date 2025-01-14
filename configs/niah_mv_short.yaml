@@ -1,0 +1,11 @@
+input_max_length: 8192,16384,32768
+datasets: ruler_niah_mv,ruler_niah_mv,ruler_niah_mv
+generation_max_length: 100,100,100
+test_files: data/ruler/niah_multivalue/validation_8192.jsonl,data/ruler/niah_multivalue/validation_16384.jsonl,data/ruler/niah_multivalue/validation_32768.jsonl
+demo_files: ',,'
+use_chat_template: false
+max_test_samples: 100
+shots: 0
+stop_new_line: false
+model_name_or_path: meta-llama/Llama-3.1-8B-Instruct
+output_dir: Llama-3.1-8B-Instruct
